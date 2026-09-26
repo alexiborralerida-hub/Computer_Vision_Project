@@ -134,7 +134,7 @@ The project solution process will be explained along this section.
 \subsubsection{Laboratory Session 5 procedure}
 Following the description from the task, the procedure from Laboratory Session 5 is used.\\
 
-It uses SIFT (Scale-Invariant Feature Transform) detector to find the keypoints for both scene and model images, and SIFT descriptor to generate the descriptors. To match the features FLANN (Fast Library for Approximate Nearest Neighbors) is used. After that, Lowe's distance ratio test filters the matches. Finally, RANSAC (Random Sample Consensus) is used to obtain a robust homography that translates keypoints from model image to scene image.\\
+It uses SIFT (Scale-Invariant Feature Transform) detector to find the keypoints for both scene and model images, and SIFT descriptor to generate the descriptors of those keypoints. To match the features FLANN (Fast Library for Approximate Nearest Neighbors) is used as it is an approximation of an exact search approach. After that, Lowe's distance ratio test filters the matches to reject wrong ones. Finally, RANSAC (Random Sample Consensus) is used to obtain a robust homography that translates keypoints from model image to scene image.\\
 
 This scheme is modified to cycle through each scene image, and for each scene image to cycle through each model image to obtain the detections. Moreover, the original method is modified to obtain a rectangular bounding box rather than a parallelepiped. These rectangles obtain the furthermost points in each direction from the matches, as seen here:
 
