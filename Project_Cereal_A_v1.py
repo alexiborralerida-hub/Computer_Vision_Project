@@ -12,7 +12,6 @@ def produce_outputs(img_train_vector, img_query_vector, MIN_MATCH_COUNT = 20):
         print('\nScene image {}: {}'.format(i+1,path))
         produce_query(img_query_vector, sift, kp_train, des_train, img_train, MIN_MATCH_COUNT)
 
-        
 
 def produce_query(img_query_vector, sift, kp_train, des_train, img_train, MIN_MATCH_COUNT):
     for i, path in enumerate(img_query_vector):
