@@ -9,6 +9,17 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 scenes_dir = os.path.join(script_dir, 'scenes')
 models_dir = os.path.join(script_dir, 'models')
 
+# Brand names corresponding to img_query_vector
+model_name_vector = [
+    'Regular Nesquick',  # 0.jpg  (Product 1 - Yellow)
+    'Orange Krave',      # 1.jpg  (Product 2)
+    'Blue Krave',        # 11.jpg (Product 3)
+    'Jordans',           # 19.jpg (Product 4)
+    'Fitness',           # 24.jpg (Product 5)
+    'Nesquick Pink',     # 26.jpg (Product 6)
+    'Coco Pops'          # 25.jpg (Product 7)
+]
+
 # ── Mahalanobis colour similarity helper ──────────────────────────────────────
 def mahalanobis_color_distance(img_color_query, img_color_scene_crop):
     """
@@ -51,7 +62,14 @@ def mahalanobis_color_distance(img_color_query, img_color_scene_crop):
 
 
 def produce_outputs(img_train_vector, img_query_vector,
-                    MIN_MATCH_COUNT=20, COLOR_THRESH=15.0):
+                    MIN_MATCH_COUNT=20, COLOR_THRESH=15.0,
+                    model_names=None):
+    if model_names is None:
+        model_names = model_name_vector
+
+    output_dir = os.path.join(script_dir, 'output_scenes')
+    os.makedirs(output_dir, exist_ok=True)
+
     for i, path in enumerate(img_train_vector):
         # Load scene in colour; keep a greyscale copy for SIFT
         scene_path = os.path.join(scenes_dir, path)
@@ -67,11 +85,21 @@ def produce_outputs(img_train_vector, img_query_vector,
         kp_train = sift.detect(img_train)
         kp_train, des_train = sift.compute(img_train, kp_train)
 
+        # Output image for drawing bounding boxes, leaving img_train_color pristine for crops
+        img_output = img_train_color.copy()
+
         print('\nScene image {}: {}'.format(i + 1, path))
         produce_query(img_query_vector, sift,
                       kp_train, des_train,
-                      img_train, img_train_color,
-                      MIN_MATCH_COUNT, COLOR_THRESH)
+                      img_train, img_train_color, img_output,
+                      MIN_MATCH_COUNT, COLOR_THRESH,
+                      model_names=model_names)
+
+        # Save annotated scene image
+        output_filename = os.path.splitext(path)[0] + '_detected.png'
+        output_path = os.path.join(output_dir, output_filename)
+        cv2.imwrite(output_path, img_output)
+        print(f"Saved annotated scene to: {output_path}")
 
 
 def _filter_keypoints_outside_poly(kp, des, polygon):
@@ -120,9 +148,10 @@ def _straighten_bb(dst):
 
 def produce_query(img_query_vector, sift,
                   kp_train, des_train,
-                  img_train, img_train_color,
+                  img_train, img_train_color, img_output,
                   MIN_MATCH_COUNT, COLOR_THRESH,
-                  MAX_RETRIES=3):
+                  MAX_RETRIES=3,
+                  model_names=None):
     """
     For each query model:
       1. Run SIFT matching against the full scene keypoint pool.
@@ -140,6 +169,7 @@ def produce_query(img_query_vector, sift,
 
     for i, path in enumerate(img_query_vector):
         query_thresh = thresh_vector[i]
+        brand_name   = model_names[i] if model_names and i < len(model_names) else path
         # Load query in colour; keep a greyscale copy for SIFT
         query_path = os.path.join(models_dir, path)
         img_query_color = cv2.imread(query_path)
@@ -218,22 +248,27 @@ def produce_query(img_query_vector, sift,
 
             if colour_ok:
                 found = True
-                img_train_color = cv2.polylines(
-                    img_train_color, [np.int32(dst)], True, (0,0,255), 3, cv2.LINE_AA)
-                print('Product {} ({}): 1 instance found [{}]: \n'
+                # Draw bounding box onto img_output, keeping img_train_color clean for crops
+                img_output = cv2.polylines(
+                    img_output, [np.int32(dst)], True, (0,0,255), 3, cv2.LINE_AA)
+                cv2.putText(
+                    img_output, f"P{i+1}: {brand_name}",
+                    (int(dst[0,0,0]), max(20, int(dst[0,0,1]) - 8)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv2.LINE_AA)
+                print('Product {} ({}, {}): 1 instance found [{}]: \n'
                       '  Instance 1 position: ({},{}), width: {} px, height: {} px'.format(
-                          i+1, path, colour_info, x_center, y_center, width_bb, height_bb))
+                          i+1, brand_name, path, colour_info, x_center, y_center, width_bb, height_bb))
             else:
                 # ── Colour rejected: remove matched region from the scene pool ──
                 # This forces the next attempt to find a different region
                 attempt_tag = '' if attempt == 1 else f' (attempt {attempt})'
                 print('  [retry{}] Colour rejected at ({},{}) [{}] – removing region and retrying…'.format(
-                      attempt_tag, x_center, y_center, colour_info))
+                       attempt_tag, x_center, y_center, colour_info))
                 kp_scene, des_scene = _filter_keypoints_outside_poly(
                     kp_scene, des_scene, dst)
 
         if not found:
-            print('Product {} ({}): 0 instance found'.format(i+1, path))
+            print('Product {} ({}, {}): 0 instance found'.format(i+1, brand_name, path))
         print('------------------------------------------------')
 
 
@@ -250,4 +285,4 @@ img_query_vector = ['0.jpg', '1.jpg', '11.jpg', '19.jpg', '24.jpg', '26.jpg', '2
 # above the true-positive distances and below the false-positive distances.
 COLOR_THRESH = [0.45,   0.92,   1.0,   1.0,   1.0,   0.28,   1.0]
 
-produce_outputs(img_train_vector, img_query_vector, MIN_MATCH_COUNT, COLOR_THRESH)
+produce_outputs(img_train_vector, img_query_vector, MIN_MATCH_COUNT, COLOR_THRESH, model_name_vector)
