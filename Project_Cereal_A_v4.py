@@ -4,6 +4,7 @@ from matplotlib import pyplot as plt
 import math
 import os
 
+# hello
 # Get the directory where the script is located
 script_dir = os.path.dirname(os.path.abspath(__file__))
 scenes_dir = os.path.join(script_dir, 'scenes')
