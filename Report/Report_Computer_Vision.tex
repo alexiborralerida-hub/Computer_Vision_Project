@@ -176,7 +176,40 @@ For instance, in the first scene image, these two Krave models are very similar 
         \caption{First scene image}
 \end{figure}
 
-Try
+
+\subsubsection{Colour descriptors approach}
+
+To consider colour into the feature match process, the decision is to enrich the descriptors with colour information. A local $2 \times 2$ crop is performed around each keypoint to extract colour information from an HSV color space image. From it, an $8 \times 8$ 2D color histogram is built, and then concatenated into the final descriptor. In the end, descriptors grow from 128 to 192.\\
+
+However, results were not satisfactory, obtaining the same erroneous detections as before.\\
+
+This has some possible explanations:\\
+
+Standard SIFT values range from 0 to 255, while the histogram is normalized from 0 to 1. As well, the SIFT features are 128, and colour ones 64, so their influence is small. In addition, SIFT keypoints are placed around edges and text, neglecting box colour in the majority of times. Finally, orientation and scale invariance are lost in that portion of the descriptor, as the crop is fixed without accounting for rotation, scale or perspective distortion.
+
+\subsubsection{Mahalanobis distance}
+
+Mahalanobis distance was chosen over other methods such as RMS distance due to its advantages.
+
+$$D_M = \sqrt{(x - \mu)^T \Sigma^{-1} (x - \mu)}$$
+
+where $\mu$ is the mean BGR vector and $\Sigma$ is the $3 \times 3$ covariance matrix of the model's pixel distribution.
+
+In natural images, $B, G,$ and $R$ channels are strongly correlated (changes in overall lighting shift $B, G,$ and $R$ together along a diagonal axis). Mahalanobis uses $\Sigma^{-1}$ to de-correlate the channels, tolerating natural luminance shifts while penalizing true chromatic discrepancies.\\
+
+Moreover, if a cereal box naturally has high variance in one channel (e.g., lots of mixed red/orange tones on Orange Krave), a difference of 15 units in the red channel is normal and expected.
+If another channel has low variance (e.g., almost zero blue content), even a small 5-unit increase in blue indicates the box is completely wrong (likely Blue Krave).
+RMS is blind to this difference—it treats a 10-unit error identically across all channels. Mahalanobis divides each deviation by the model's observed standard deviation along that axis.\\
+
+In this approach, instead of adding colour information to every descriptor, the colour is checked only for successful homographies, and both checks (geometry and colour) are decoupled.\\
+
+In the beginning, a single threshold was applied for all cases of cereal box. However, different cereal boxes have different colour distributions: while ones have a uniform hue and generates small distances, others have white backgrounds with shapes and labels that generate bigger distances. Considering as well that some boxes have the same colours but for a change in background colour, it worked better to have a custom threshold for each cereal box case. For instance, if set loose enough (1.0) to avoid False Negatives for multi-colored boxes (Fitness, Jordans), it caused False Positives on look-alike variants (Nesquik Pink vs. Yellow Nesquik). If tightened to 0.3 to separate look-alikes, it caused False Negatives on almost everything else.
+
+A later improvement included solving an issue related to the decoupling of geometry and colour checks. As SIFT does not include colour information, similar shaped graphics with a different background could be misinterpreted by SIFT as it selects the candidate with the highest amount of matches. That candidate will later be rejected by Mahalanobis threshold, and the output is that no matching is performed as SIFT will not check for the next. To correct that behaviour, for each box a maximum of 3 retries is performed, in which the pixels of an unsuccessful candidate are temporally removed to allow SIFT look for the next geometry.
+
+
+
+
 
 \newpage
 \ \thispagestyle{empty}
