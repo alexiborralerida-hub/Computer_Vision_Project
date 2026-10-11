@@ -11,16 +11,16 @@ models_dir = os.path.join(script_dir, 'models')
 
 # Brand names corresponding to img_query_vector
 model_name_vector = [
-    'Regular Nesquick',  # 0.jpg  (Product 1 - Yellow)
-    'Orange Krave',      # 1.jpg  (Product 2)
-    'Blue Krave',        # 11.jpg (Product 3)
+    'Regular Nesquick',  # 0.jpg  (Product 1)
+    'Blue Krave',      # 1.jpg  (Product 2)
+    'Orange Krave',        # 11.jpg (Product 3)
     'Jordans',           # 19.jpg (Product 4)
     'Fitness',           # 24.jpg (Product 5)
     'Nesquick Pink',     # 26.jpg (Product 6)
-    'Coco Pops'          # 25.jpg (Product 7)
+    'Red Coco Pops'          # 25.jpg (Product 7)
 ]
 
-# ── Mahalanobis colour similarity helper ──────────────────────────────────────
+# Mahalanobis colour similarity helper
 def mahalanobis_color_distance(img_color_query, img_color_scene_crop):
     """
     Compare the colour of a scene crop against a query model using Mahalanobis
@@ -31,13 +31,13 @@ def mahalanobis_color_distance(img_color_query, img_color_scene_crop):
     differences while preserving hue/saturation ratios between channels.
 
     Returns:
-        distance (float) – lower is more similar.
+        distance (float): lower is more similar.
     """
     # Flatten to (N, 3) float arrays
     pixels_query = img_color_query.reshape(-1, 3).astype(np.float64)
     pixels_crop  = img_color_scene_crop.reshape(-1, 3).astype(np.float64)
 
-    # ── Brightness normalisation ───────────────────────────────────────────────
+    # Brightness normalisation
     # Divide each image by its own overall mean pixel value so that both are
     # mapped to ≈1.0 average brightness, cancelling per-scene lighting shifts
     # without discarding colour ratios (hue/saturation information is kept).
@@ -60,9 +60,12 @@ def mahalanobis_color_distance(img_color_query, img_color_scene_crop):
     dist = np.sqrt(diff @ sigma_inv @ diff)
     return dist
 
-
+# Difference of parameters between Step A and GHT scripts:
+# Step A: MIN_MATCH_COUNT=20 -> changed to 73, COLOR_THRESH=15.0 -> changed to 1.0 with Mahalanobis normalization
+# Step B GHT: MIN_MATCH_COUNT=25, MIN_PEAK_VOTES=20, MIN_INLIER_COUNT=20, BIN_SIZE=40, COLOR_THRESH=1.0
+# Step B Crop: MIN_MATCH_COUNT=30, MIN_INLIER_COUNT=25, COLOR_THRESH=1.0, MAX_RETRIES=3
 def produce_outputs(img_train_vector, img_query_vector,
-                    MIN_MATCH_COUNT=20, COLOR_THRESH=15.0,
+                    MIN_MATCH_COUNT=73, COLOR_THRESH=1.0,
                     model_names=None):
     if model_names is None:
         model_names = model_name_vector
@@ -104,7 +107,7 @@ def produce_outputs(img_train_vector, img_query_vector,
 
 def _filter_keypoints_outside_poly(kp, des, polygon):
     """
-    Return (kp_kept, des_kept) — keypoints whose position lies OUTSIDE `polygon`.
+    Return (kp_kept, des_kept): keypoints whose position lies OUTSIDE `polygon`.
     `polygon` is a (4,1,2) float32 array as returned by perspectiveTransform.
     """
     poly = np.int32(polygon)  # (4,1,2)
@@ -185,7 +188,7 @@ def produce_query(img_query_vector, sift,
         h, w = img_query.shape
         query_corners = np.float32([[0,0],[0,h-1],[w-1,h-1],[w-1,0]]).reshape(-1,1,2)
 
-        # Working copies of the scene keypoint pool — shrunk on each colour rejection
+        # Working copies of the scene keypoint pool , shrunk on each colour rejection
         kp_scene  = list(kp_train)
         des_scene = des_train.copy()
 
@@ -220,16 +223,16 @@ def produce_query(img_query_vector, sift,
             x_center  = round(dst[0,0,0] + width_bb  / 2)
             y_center  = round(dst[0,0,1] + height_bb / 2)
 
-            # ── Sanity check: reject degenerate bounding boxes ─────────────────
+            # Sanity check: reject degenerate bounding boxes
             # A valid box must be at least 50×50 px; anything smaller is a bad
             # homography and should be discarded as a false match.
             MIN_BB_SIZE = 50
             if width_bb < MIN_BB_SIZE or height_bb < MIN_BB_SIZE:
-                print('  [skip] Degenerate bbox ({}x{} px) – discarding match'.format(
+                print('  [skip] Degenerate bbox ({}x{} px) , discarding match'.format(
                       width_bb, height_bb))
                 break   # no point retrying; homography is fundamentally broken
 
-            # ── Mahalanobis colour verification ───────────────────────────────
+            # Mahalanobis colour verification
             x1 = max(0, int(dst[0,0,0]))
             y1 = max(0, int(dst[0,0,1]))
             x2 = min(img_train_color.shape[1], int(dst[3,0,0]))
@@ -241,10 +244,10 @@ def produce_query(img_query_vector, sift,
                 colour_ok  = dist <= query_thresh
                 colour_info = 'Mahalanobis dist = {:.4f} (thresh={})'.format(dist, query_thresh)
             else:
-                # Crop region is outside the image bounds — treat as a rejection
+                # Crop region is outside the image bounds , treat as a rejection
                 # so the retry loop can try a different scene region.
                 colour_ok   = False
-                colour_info = 'crop out-of-bounds – treated as rejection'
+                colour_info = 'crop out of bounds, treated as rejection'
 
             if colour_ok:
                 found = True
@@ -259,10 +262,10 @@ def produce_query(img_query_vector, sift,
                       '  Instance 1 position: ({},{}), width: {} px, height: {} px'.format(
                           i+1, brand_name, path, colour_info, x_center, y_center, width_bb, height_bb))
             else:
-                # ── Colour rejected: remove matched region from the scene pool ──
+                # Colour rejected: remove matched region from the scene pool
                 # This forces the next attempt to find a different region
                 attempt_tag = '' if attempt == 1 else f' (attempt {attempt})'
-                print('  [retry{}] Colour rejected at ({},{}) [{}] – removing region and retrying…'.format(
+                print('  [retry{}] Colour rejected at ({},{}) [{}] , removing region and retrying…'.format(
                        attempt_tag, x_center, y_center, colour_info))
                 kp_scene, des_scene = _filter_keypoints_outside_poly(
                     kp_scene, des_scene, dst)
@@ -272,15 +275,15 @@ def produce_query(img_query_vector, sift,
         print('------------------------------------------------')
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+# Entry point
 MIN_MATCH_COUNT = 73
 
 img_train_vector = ['e1.png', 'e2.png', 'e3.png', 'e4.png', 'e5.png']
 img_query_vector = ['0.jpg', '1.jpg', '11.jpg', '19.jpg', '24.jpg', '26.jpg', '25.jpg']
 
-# Per-query Mahalanobis distance threshold — one value per entry in img_query_vector.
-# Index:         0      1      2      3      4      5      6
-#             0.jpg  1.jpg 11.jpg 19.jpg 24.jpg 26.jpg 25.jpg
+# Per-query Mahalanobis distance threshold , one value per entry in img_query_vector.
+# Index: 0 1 2 3 4 5 6
+# 0.jpg 1.jpg 11.jpg 19.jpg 24.jpg 26.jpg 25.jpg
 # Look at the printed distances when running and tune each value to sit just
 # above the true-positive distances and below the false-positive distances.
 COLOR_THRESH = [0.45,   0.92,   1.0,   1.0,   1.0,   0.28,   1.0]

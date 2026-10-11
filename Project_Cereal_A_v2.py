@@ -9,7 +9,7 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 scenes_dir = os.path.join(script_dir, 'scenes')
 models_dir = os.path.join(script_dir, 'models')
 
-# ── Mahalanobis colour similarity helper ──────────────────────────────────────
+# Mahalanobis colour similarity helper
 def mahalanobis_color_distance(img_color_query, img_color_scene_crop):
     """
     Compare the colour of a scene crop against a query model using Mahalanobis
@@ -26,7 +26,7 @@ def mahalanobis_color_distance(img_color_query, img_color_scene_crop):
     A large distance → different colour (box variant to reject).
 
     Returns:
-        distance (float) – lower is more similar.
+        distance (float): lower is more similar.
     """
     # Flatten to (N, 3) float arrays
     pixels_query = img_color_query.reshape(-1, 3).astype(np.float64)
@@ -111,7 +111,7 @@ def produce_query(img_query_vector, sift,
             pts = np.float32([[0, 0], [0, h - 1], [w - 1, h - 1], [w - 1, 0]]).reshape(-1, 1, 2)
             dst = cv2.perspectiveTransform(pts, M)
 
-            # ── Straighten bounding box corners ───────────────────────────────
+            # Straighten bounding box corners
             # Left
             if dst[0, 0, 0] < dst[1, 0, 0]:
                 dst[1, 0, 0] = dst[0, 0, 0]
@@ -141,7 +141,7 @@ def produce_query(img_query_vector, sift,
             x_center  = round(dst[0, 0, 0] + width_bb  / 2)
             y_center  = round(dst[0, 0, 1] + height_bb / 2)
 
-            # ── Mahalanobis colour verification ───────────────────────────────
+            # Mahalanobis colour verification
             # Crop the matched bounding-box region from the colour scene image
             x1 = max(0, int(dst[0, 0, 0]))
             y1 = max(0, int(dst[0, 0, 1]))
@@ -156,7 +156,7 @@ def produce_query(img_query_vector, sift,
                 colour_info = 'Mahalanobis dist = {:.2f}'.format(dist)
             else:
                 colour_ok = True   # crop failed, skip colour check
-                colour_info = 'crop failed – colour check skipped'
+                colour_info = 'crop failed, colour check skipped'
 
             if colour_ok:
                 img_train_color = cv2.polylines(
@@ -166,7 +166,7 @@ def produce_query(img_query_vector, sift,
                           i + 1, path, colour_info, x_center, y_center, width_bb, height_bb))
             else:
                 print('Product {} ({}): 0 instance found '
-                      '(geometry matched but colour rejected – {})'.format(i + 1, path, colour_info))
+                      '(geometry matched but colour rejected, {})'.format(i + 1, path, colour_info))
             print('------------------------------------------------')
 
         else:
@@ -174,10 +174,10 @@ def produce_query(img_query_vector, sift,
             print('------------------------------------------------')
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+# Entry point
 MIN_MATCH_COUNT = 100
 # Mahalanobis distance threshold (in units of std-devs of the query colour).
-# Lower = stricter colour match.  Start around 10–20 and tune.
+# Lower = stricter colour match. Start around 10, 20 and tune.
 COLOR_THRESH = 1
 
 img_train_vector = ['e1.png', 'e2.png', 'e3.png', 'e4.png', 'e5.png']
