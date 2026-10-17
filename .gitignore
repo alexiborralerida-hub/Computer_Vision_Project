@@ -10,3 +10,6 @@ Report/Report_Computer_Vision.out
 Report/Report_Computer_Vision.aux
 
 Report/Report_Computer_Vision.log
+
+__pycache__/
+*.pyc
