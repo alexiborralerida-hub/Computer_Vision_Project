@@ -205,9 +205,64 @@ In this approach, instead of adding colour information to every descriptor, the 
 
 In the beginning, a single threshold was applied for all cases of cereal box. However, different cereal boxes have different colour distributions: while ones have a uniform hue and generates small distances, others have white backgrounds with shapes and labels that generate bigger distances. Considering as well that some boxes have the same colours but for a change in background colour, it worked better to have a custom threshold for each cereal box case. For instance, if set loose enough (1.0) to avoid False Negatives for multi-colored boxes (Fitness, Jordans), it caused False Positives on look-alike variants (Nesquik Pink vs. Yellow Nesquik). If tightened to 0.3 to separate look-alikes, it caused False Negatives on almost everything else.
 
-A later improvement included solving an issue related to the decoupling of geometry and colour checks. As SIFT does not include colour information, similar shaped graphics with a different background could be misinterpreted by SIFT as it selects the candidate with the highest amount of matches. That candidate will later be rejected by Mahalanobis threshold, and the output is that no matching is performed as SIFT will not check for the next. To correct that behaviour, for each box a maximum of 3 retries is performed, in which the pixels of an unsuccessful candidate are temporally removed to allow SIFT look for the next geometry.
+A later improvement included solving an issue related to the decoupling of geometry and colour checks:
+
+\subsubsection{Sequential RANSAC}
+
+SIFT does not include colour information, so similar shaped graphics with a different background could be misinterpreted by it. RANSAC, on the other hand, has a greedy approach; it only selects the candidate with the highest amount of matches. If the candidate is not the correct one, it will be rejected by Mahalanobis threshold, so the output is no matches found, and RANSAC does not search for the next candidate. To correct that behaviour, the algorithm does a maximum of 3 retries, in which the pixels of an unsuccessful candidate are temporally removed to allow RANSAC look for a new geometry.
 
 
+\subsubsection{Color constancy}
+
+The last improvement is to add color constancy to the analysed cropped image. To achieve that, the scene crop is divided by the global mean pixel value before computing $\mu$ and $\Sigma$. In this way illumination or exposure sensitivity is solved, as the model images have different illumination than the dimmer ambient lighting of the supermarket shelves.\\
+
+As an example, suppose a box in a dim cropped scene has identical color paint, but receives only half the light as its query image:\\
+\begin{equation}
+BGR_{Query} = \begin{bmatrix}
+B\\
+G\\
+R
+\end{bmatrix} = \begin{bmatrix}
+50\\
+120\\
+200
+\end{bmatrix}
+\end{equation}
+
+\begin{equation}
+Brightness_{Query} = \frac{B+G+R}{3} \approx 123
+\end{equation}
+
+
+\begin{equation}
+BGR_{Crop} = \begin{bmatrix}
+25\\
+60\\
+100
+\end{bmatrix}
+\end{equation}
+
+\begin{equation}
+Brightness_{Crop} \approx 61
+\end{equation}
+
+
+In this case, hue and saturation or in other words the ratio BGR, is the same, but the brightness value affects how Mahalanobis will reject the candidate. By dividing the pixels by its overall mean, this effect is removed: brightness is normalized to approximately 1, while preserving hue and saturation.\\
+
+
+With these additions, Step A could be completed successfully.
+
+\subsection{Step B - Multiple Instance Detection}
+
+\subsubsection{Generalized Hough Transform}
+
+From the task definition, the next step is to implement the GHT (Generalized Hough Transform).\\
+
+To give some context, RANSAC was designed under the fundamental assumption that there is one true transformation, an inlier, and the rest are outliers.\\
+
+Therefore, in Step A, the matching keypoints from the entire image are used in the homography. If multiple boxes of the same brand exist in the scene, RANSAC performs random sampling: it fetches random matching keypoints, evaluates the transformation matrix that they yield, and checks the matrix with other keypoints to see if they agree with that transformation (if they do so, they are inliers). It repeats this random drawing many times, and keeps the transformation that gathered the most inliers. To find a valid box, RANSAC must randomly  all random points from the exact same box, which is statistically suboptimal.\\
+
+To solve this, GHT clusters the matches previous to RANSAC. Each point is now described not by pixels but by its center $(X_c, Y_c)$, scale $s$ and rotation angle $\theta$. It casts votes of where the barycenter of the cereal box is located when a SIFT match is performed. It happens so because a matched keypoint knows its relative position to the center image, so after applying translation and rotation to the displacement vector it calculates a prediction of the center in the scene image, that gets accumulated in a 2D grid. Votes therefore will cluster around spatial peaks, and RANSAC is only run on the matches belonging to each peak, thus separating multiple instances.
 
 
 
