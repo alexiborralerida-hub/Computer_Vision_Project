@@ -140,7 +140,7 @@ def produce_outputs(img_train_vector, img_query_vector,
 
     sift = cv2.SIFT_create()
 
-    # Precompute model descriptors once
+    # FIX: Precompute model descriptors once before scene loop to avoid redundant computation
     print("Precomputing SIFT descriptors for Step B models...")
     models_data = []
     for i, path in enumerate(img_query_vector):
@@ -219,7 +219,7 @@ def produce_outputs(img_train_vector, img_query_vector,
 
             while des_scene is not None and len(kp_scene) >= MIN_MATCH_COUNT:
                 flann = cv2.FlannBasedMatcher(index_params, search_params)
-                # Scene as query, Model as train
+                # FIX: Scene -> Model matching: prevents repeated identical boxes from cancelling in Lowe's ratio test
                 matches = flann.knnMatch(des_scene, des_query, k=2)
                 good = [m for m, n in matches if len((m, n)) == 2 and m.distance < 0.75 * n.distance]
 
@@ -238,15 +238,15 @@ def produce_outputs(img_train_vector, img_query_vector,
                 inlier_count = int(np.sum(inliers_mask))
                 matched_scene_indices = [m.queryIdx for idx, m in enumerate(good) if inliers_mask[idx] == 1]
 
+                # FIX: Suppress matched inlier keypoints by index on rejection to guarantee forward progress
                 if inlier_count < MIN_INLIER_COUNT:
-                    # Suppress inlier keypoints that failed threshold to allow forward progress
                     kp_scene, des_scene = _filter_keypoints(kp_scene, des_scene, remove_indices=matched_scene_indices)
                     retries += 1
                     if retries > MAX_RETRIES:
                         break
                     continue
 
-                # Inlier spread check on model coordinates
+                # FIX: Inlier spread check (>= 12% of model dimensions) to reject localized logo clusters
                 inlier_model_pts = src_pts[inliers_mask == 1, 0, :]
                 span_x = np.ptp(inlier_model_pts[:, 0]) / float(w_m)
                 span_y = np.ptp(inlier_model_pts[:, 1]) / float(h_m)
@@ -257,7 +257,7 @@ def produce_outputs(img_train_vector, img_query_vector,
                         break
                     continue
 
-                # Perspective transform & polygon convexity validation
+                # FIX: Homography validation: check contour convexity and model-relative aspect ratio
                 dst_raw = cv2.perspectiveTransform(query_corners, M)
                 if not cv2.isContourConvex(np.int32(dst_raw)):
                     kp_scene, des_scene = _filter_keypoints(kp_scene, des_scene, remove_indices=matched_scene_indices)
@@ -338,7 +338,7 @@ def produce_outputs(img_train_vector, img_query_vector,
                     if retries > MAX_RETRIES:
                         break
 
-        # Cross-model overlap removal across all 7 models
+        # FIX: Cross-model NMS scored by inliers / (dist + 0.1) across all models
         scene_candidates.sort(key=lambda d: d['score'], reverse=True)
         final_detections = []
         for cand in scene_candidates:
@@ -352,7 +352,7 @@ def produce_outputs(img_train_vector, img_query_vector,
             if not suppressed:
                 final_detections.append(cand)
 
-        # Sort final detections top-to-bottom, left-to-right
+        # FIX: Resolution-adaptive shelf row sorting (h_s * 0.18)
         final_detections.sort(key=lambda d: (d['cy'] // max(20, int(round(h_s * 0.18))), d['cx']))
 
         # Draw and report

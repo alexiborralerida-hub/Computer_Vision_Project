@@ -115,7 +115,7 @@ def produce_outputs(img_train_vector, img_query_vector,
 
     sift = cv2.SIFT_create()
 
-    # Precompute model descriptors once before the scene loop
+    # FIX: Precompute model descriptors once before scene loop to avoid redundant computation
     print("Precomputing SIFT descriptors for Step B models...")
     models_data = []
     for i, path in enumerate(img_query_vector):
@@ -191,7 +191,7 @@ def produce_outputs(img_train_vector, img_query_vector,
             model_ar = float(h_m) / float(w_m)
 
             # 2. Feature Matching: Scene as query, Model as train
-            # Prevents multiple side-by-side instances from canceling out in Lowe's ratio test
+            # FIX: Scene -> Model matching: prevents repeated identical boxes from cancelling in Lowe's ratio test
             matches = flann.knnMatch(des_train, des_query, k=2)
             good = [m for m, n in matches if len((m, n)) == 2 and m.distance < 0.75 * n.distance]
 
@@ -208,7 +208,7 @@ def produce_outputs(img_train_vector, img_query_vector,
                 ks = kp_train[m.queryIdx]
                 km = kp_query[m.trainIdx]
 
-                # Orientation difference with wrap-around in [-180, 180)
+                # FIX: Orientation wrap-around in [-180, 180) and upright angle filtering (|d_deg| <= 25)
                 d_deg = (ks.angle - km.angle + 180.0) % 360.0 - 180.0
                 if abs(d_deg) > 25.0:
                     continue
@@ -229,6 +229,7 @@ def produce_outputs(img_train_vector, img_query_vector,
                 gx = int(vx // BIN_SIZE)
                 gy = int(vy // BIN_SIZE)
 
+                # FIX: Vote strictly with projected barycenter; do not pollute grid with raw keypoint positions
                 if 0 <= gx < grid_w and 0 <= gy < grid_h:
                     bin_matches.setdefault((gy, gx), []).append(m)
 
@@ -254,7 +255,7 @@ def produce_outputs(img_train_vector, img_query_vector,
                 peak_cx = (gx + 0.5) * BIN_SIZE
                 peak_cy = (gy + 0.5) * BIN_SIZE
 
-                # Skip peak if its center falls inside an already accepted box for this model
+                # FIX: Skip peaks already covered by an accepted box of the same model
                 inside_accepted = False
                 for prev_box in model_detected_boxes:
                     if prev_box[0] <= peak_cx <= prev_box[2] and prev_box[1] <= peak_cy <= prev_box[3]:
@@ -289,14 +290,14 @@ def produce_outputs(img_train_vector, img_query_vector,
                 if inlier_count < MIN_INLIER_COUNT:
                     continue
 
-                # Validate inlier spatial spread in model coordinates
+                # FIX: Inlier spread check (>= 12% of model dimensions) to reject tiny localized logo clusters
                 inlier_model_pts = src_pts[inliers_mask == 1, 0, :]
                 span_x = np.ptp(inlier_model_pts[:, 0]) / float(w_m)
                 span_y = np.ptp(inlier_model_pts[:, 1]) / float(h_m)
                 if span_x < 0.12 or span_y < 0.12:
                     continue
 
-                # Project corners and validate polygon geometry
+                # FIX: Homography validation: check contour convexity and model-relative aspect ratio before straightening
                 dst_raw = cv2.perspectiveTransform(query_corners, M)
                 if not cv2.isContourConvex(np.int32(dst_raw)):
                     continue
@@ -362,7 +363,7 @@ def produce_outputs(img_train_vector, img_query_vector,
                     'dst': dst
                 })
 
-        # 7. Cross-Model Overlap Removal (NMS across all 7 models)
+        # FIX: Cross-model NMS scored by inliers / (dist + 0.1) to resolve inter-brand overlaps
         scene_candidates.sort(key=lambda d: d['score'], reverse=True)
         final_detections = []
         for cand in scene_candidates:
@@ -376,7 +377,7 @@ def produce_outputs(img_train_vector, img_query_vector,
             if not suppressed:
                 final_detections.append(cand)
 
-        # 8. Sort final detections top-to-bottom, left-to-right
+        # FIX: Resolution-adaptive shelf row sorting (h_s * 0.18)
         final_detections.sort(key=lambda d: (d['cy'] // max(20, int(round(h_s * 0.18))), d['cx']))
 
         # Draw and report

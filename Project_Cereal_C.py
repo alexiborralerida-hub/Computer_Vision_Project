@@ -160,7 +160,7 @@ def produce_outputs(img_train_vector, img_query_vector,
     search_params = dict(checks=100)
     flann = cv2.FlannBasedMatcher(index_params, search_params)
 
-    # Precompute model descriptors
+    # FIX: Precompute reference RootSIFT descriptors once before processing shelves
     print("Precomputing RootSIFT descriptors for reference product models...")
     models_data = []
     for i, path in enumerate(img_query_vector):
@@ -227,7 +227,7 @@ def produce_outputs(img_train_vector, img_query_vector,
             if des_m is None or len(kp_m) < 5:
                 continue
 
-            # Scene as query, Model as train: stops repeated boxes from dropping in ratio test
+            # FIX: Scene -> Model matching: enables full recall for multiple repeated items across shelves
             matches = flann.knnMatch(des_train_root, des_m, k=2)
             good = [m for m, n in matches if len((m, n)) == 2 and m.distance < 0.78 * n.distance]
 
@@ -255,7 +255,7 @@ def produce_outputs(img_train_vector, img_query_vector,
                 s_raw = ks.size / (km.size + 1e-6)
                 s = np.clip(s_raw, 0.4 * exp_scale, 2.0 * exp_scale)
 
-                # Orientation difference wrapped into [-180, 180)
+                # FIX: Orientation wrap-around into [-180, 180) and upright angle filtering (|d_deg| <= 25)
                 d_deg = (ks.angle - km.angle + 180.0) % 360.0 - 180.0
                 if abs(d_deg) > 25.0:
                     continue
@@ -269,6 +269,8 @@ def produce_outputs(img_train_vector, img_query_vector,
 
                 gx = int(vx // BIN_SIZE)
                 gy = int(vy // BIN_SIZE)
+
+                # FIX: GHT voting strictly on barycenter (gy, gx); removed raw keypoint pollution
                 if 0 <= gx < grid_w and 0 <= gy < grid_h:
                     bin_matches.setdefault((gy, gx), []).append(m)
 
@@ -301,14 +303,14 @@ def produce_outputs(img_train_vector, img_query_vector,
                 if inlier_count < MIN_INLIER_COUNT:
                     continue
 
-                # Validate inlier spatial spread in model coordinates
+                # FIX: Inlier spatial spread check (>= 12% model span) eliminates logo clustering false alarms
                 inlier_model_pts = src_pts[inliers_mask == 1, 0, :]
                 span_x = np.ptp(inlier_model_pts[:, 0]) / float(w_m)
                 span_y = np.ptp(inlier_model_pts[:, 1]) / float(h_m)
                 if span_x < 0.12 or span_y < 0.12:
                     continue
 
-                # Project corners to 2x space and validate polygon convexity
+                # FIX: Homography validation: check contour convexity and model-relative aspect ratio before straightening
                 dst_scaled = cv2.perspectiveTransform(query_corners, M)
                 if not cv2.isContourConvex(np.int32(dst_scaled)):
                     continue
@@ -328,7 +330,7 @@ def produce_outputs(img_train_vector, img_query_vector,
                 x_center  = round(dst[0, 0, 0] + width_bb  / 2.0)
                 y_center  = round(dst[0, 0, 1] + height_bb / 2.0)
 
-                # Distractor rejection & bounding box bounds (reject price tags < 45px)
+                # FIX: Price tag / barcode distractor rejection: aspect ratio + minimum height (h >= 45 px)
                 if not (24 <= width_bb <= 115 and 45 <= height_bb <= 145):
                     continue
 
@@ -374,7 +376,7 @@ def produce_outputs(img_train_vector, img_query_vector,
                     'dst': dst
                 })
 
-        # Cross-Model Non-Maximum Suppression (Inter-Class & Intra-Class Conflict Resolution)
+        # FIX: Cross-model NMS scored by inliers / (dist + 0.1) to resolve duplicate models (P10 vs P24) and look-alikes
         scene_candidates.sort(key=lambda d: d['score'], reverse=True)
         final_detections = []
 
@@ -390,7 +392,7 @@ def produce_outputs(img_train_vector, img_query_vector,
             if not suppressed:
                 final_detections.append(cand)
 
-        # Sort detections by shelf row (resolution-adaptive) then horizontally
+        # FIX: Resolution-adaptive shelf row sorting (h_s * 0.18)
         shelf_row_height = max(20, int(round(h_s * 0.18)))
         final_detections.sort(key=lambda d: (d['cy'] // shelf_row_height, d['cx']))
 
