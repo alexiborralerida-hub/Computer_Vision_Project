@@ -436,13 +436,12 @@ def produce_outputs(img_train_vector, img_query_vector,
         total_scene_instances = len(final_detections)
         print(f"\nTotal products detected in {scene_filename}: {total_scene_instances} instances")
 
-        # Save annotated images
+        # Save annotated image
         root_name = os.path.splitext(scene_filename)[0]
-        output_filename = f"{root_name}_detected_StepC.png"
+        output_filename = f"{root_name}_detected.png"
         output_path = os.path.join(output_dir, output_filename)
         cv2.imwrite(output_path, img_output)
-        cv2.imwrite(os.path.join(output_dir, f"{root_name}_detected.png"), img_output)
-        print(f"[Saved annotated scene to: {output_path} and {root_name}_detected.png]\n" + "-" * 70)
+        print(f"[Saved annotated scene to: {output_path}]\n" + "-" * 70)
 
 
 # Entry point
