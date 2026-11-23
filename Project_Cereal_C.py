@@ -121,7 +121,7 @@ def _find_image_path(base_dir, filename):
     path = os.path.join(base_dir, filename)
     if os.path.exists(path):
         return path
-    root, ext = os.path.splitext(filename)
+    root, _ = os.path.splitext(filename)
     for alt_ext in ['.png', '.jpg', '.jpeg']:
         alt_path = os.path.join(base_dir, root + alt_ext)
         if os.path.exists(alt_path):
@@ -131,7 +131,7 @@ def _find_image_path(base_dir, filename):
 
 def produce_outputs(img_train_vector, img_query_vector,
                     scale=2.0,
-                    MIN_INLIER_COUNT=5,
+                    MIN_INLIER_COUNT=7,
                     BIN_SIZE_BASE=26,
                     COLOR_THRESH=1.25,
                     model_names=None):
@@ -139,12 +139,13 @@ def produce_outputs(img_train_vector, img_query_vector,
     Step C - Whole Shelve Challenge Pipeline:
     1. Precomputes RootSIFT descriptors for all 24 reference product models.
     2. Upscales low-resolution scene image by 2x (bicubic) to extract 4x more features.
-    3. Runs hybrid Generalized Hough Transform (GHT) with scale regularization and spatial binning.
-    4. Performs local RANSAC homography estimation, straightening, and geometric box sanity checks.
-    5. Filters distractors (price tags, shelf edges) via aspect ratio and minimum height bounds.
-    6. Verifies candidate crops using brightness-normalized Mahalanobis color distance.
-    7. Resolves cross-model overlaps and look-alike variants via Cross-Model Non-Maximum Suppression.
-    8. Reports detailed instance dimensions, positions, and prints summary counts.
+    3. Runs Scene -> Model feature matching so repeated products do not cancel out.
+    4. Employs orientation-wrapped GHT voting on barycenter positions only.
+    5. Validates local RANSAC homography (convexity, model-relative aspect ratio, inlier span).
+    6. Filters distractors (price tags, shelf edges) via aspect ratio and minimum height bounds.
+    7. Verifies candidate crops using brightness-normalized Mahalanobis color distance.
+    8. Resolves cross-model overlaps via Cross-Model Non-Maximum Suppression with score = inliers / (dist + 0.1).
+    9. Reports detailed instance dimensions, positions, and prints summary counts.
     """
     if model_names is None:
         model_names = model_name_vector
@@ -152,10 +153,8 @@ def produce_outputs(img_train_vector, img_query_vector,
     output_dir = os.path.join(script_dir, 'output_scenes')
     os.makedirs(output_dir, exist_ok=True)
 
-    # SIFT detector with optimized contrast threshold for subtle cereal packaging textures
     sift = cv2.SIFT_create(contrastThreshold=0.014)
 
-    # FLANN Matcher configuration
     FLANN_INDEX_KDTREE = 1
     index_params  = dict(algorithm=FLANN_INDEX_KDTREE, trees=5)
     search_params = dict(checks=100)
@@ -188,7 +187,7 @@ def produce_outputs(img_train_vector, img_query_vector,
             'h': h_m
         })
 
-    print(f"Loaded {len(models_data)} models successfully.\n" + "="*70)
+    print(f"Loaded {len(models_data)} models successfully.\n" + "=" * 70)
 
     # Process each scene image
     for s_idx, scene_filename in enumerate(img_train_vector):
@@ -228,15 +227,17 @@ def produce_outputs(img_train_vector, img_query_vector,
             if des_m is None or len(kp_m) < 5:
                 continue
 
-            matches = flann.knnMatch(des_m, des_train_root, k=2)
-            good = [m for m, n in matches if m.distance < 0.78 * n.distance]
+            # Scene as query, Model as train: stops repeated boxes from dropping in ratio test
+            matches = flann.knnMatch(des_train_root, des_m, k=2)
+            good = [m for m, n in matches if len((m, n)) == 2 and m.distance < 0.78 * n.distance]
 
             if len(good) < 5:
                 continue
 
-            # Expected scale factor for typical shelf box height (~150px in 2x space)
+            # Expected physical scale factor in 2x space
             exp_scale = 150.0 / float(h_m)
             xc_m, yc_m = w_m / 2.0, h_m / 2.0
+            model_ar = float(h_m) / float(w_m)
 
             BIN_SIZE = BIN_SIZE_BASE * scale
             grid_h = int(np.ceil(h_s * scale / BIN_SIZE))
@@ -244,21 +245,22 @@ def produce_outputs(img_train_vector, img_query_vector,
 
             bin_matches = {}
 
-            # Hybrid Voting: GHT barycenter vote + spatial position pooling
+            # GHT barycenter voting
             for m in good:
-                km = kp_m[m.queryIdx]
-                ks = kp_train[m.trainIdx]
+                # m.queryIdx -> Scene (2x space), m.trainIdx -> Model
+                ks = kp_train[m.queryIdx]
+                km = kp_m[m.trainIdx]
 
                 # Constrain SIFT scale ratio around physical expected box scale
                 s_raw = ks.size / (km.size + 1e-6)
                 s = np.clip(s_raw, 0.4 * exp_scale, 2.0 * exp_scale)
 
-                # Damped orientation difference (supermarket cereal boxes are upright)
-                d_theta = np.radians(ks.angle - km.angle)
-                if abs(np.degrees(d_theta)) > 25:
-                    cos_t, sin_t = 1.0, 0.0
-                else:
-                    cos_t, sin_t = np.cos(d_theta), np.sin(d_theta)
+                # Orientation difference wrapped into [-180, 180)
+                d_deg = (ks.angle - km.angle + 180.0) % 360.0 - 180.0
+                if abs(d_deg) > 25.0:
+                    continue
+                d_theta = np.radians(d_deg)
+                cos_t, sin_t = np.cos(d_theta), np.sin(d_theta)
 
                 dx = xc_m - km.pt[0]
                 dy = yc_m - km.pt[1]
@@ -269,12 +271,6 @@ def produce_outputs(img_train_vector, img_query_vector,
                 gy = int(vy // BIN_SIZE)
                 if 0 <= gx < grid_w and 0 <= gy < grid_h:
                     bin_matches.setdefault((gy, gx), []).append(m)
-
-                # Direct spatial location pooling
-                sgx = int(ks.pt[0] // BIN_SIZE)
-                sgy = int(ks.pt[1] // BIN_SIZE)
-                if 0 <= sgx < grid_w and 0 <= sgy < grid_h:
-                    bin_matches.setdefault((sgy, sgx), []).append(m)
 
             # Accumulator peak extraction (3x3 neighborhood pooling)
             candidate_peaks = []
@@ -290,47 +286,60 @@ def produce_outputs(img_train_vector, img_query_vector,
 
             candidate_peaks.sort(key=lambda x: x[0], reverse=True)
 
-            query_corners = np.float32([[0,0],[0,h_m-1],[w_m-1,h_m-1],[w_m-1,0]]).reshape(-1,1,2)
+            query_corners = np.float32([[0, 0], [0, h_m - 1], [w_m - 1, h_m - 1], [w_m - 1, 0]]).reshape(-1, 1, 2)
 
             for count, gy, gx, peak_matches in candidate_peaks:
-                src_pts = np.float32([kp_m[m.queryIdx].pt for m in peak_matches]).reshape(-1,1,2)
-                dst_pts = np.float32([kp_train[m.trainIdx].pt for m in peak_matches]).reshape(-1,1,2)
+                src_pts = np.float32([kp_m[m.trainIdx].pt for m in peak_matches]).reshape(-1, 1, 2)
+                dst_pts = np.float32([kp_train[m.queryIdx].pt for m in peak_matches]).reshape(-1, 1, 2)
 
                 M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 4.0 * scale)
                 if M is None:
                     continue
 
-                inlier_count = int(mask.sum())
+                inliers_mask = mask.ravel()
+                inlier_count = int(np.sum(inliers_mask))
                 if inlier_count < MIN_INLIER_COUNT:
                     continue
 
-                # Project corners to scene and scale back to 1x original resolution
+                # Validate inlier spatial spread in model coordinates
+                inlier_model_pts = src_pts[inliers_mask == 1, 0, :]
+                span_x = np.ptp(inlier_model_pts[:, 0]) / float(w_m)
+                span_y = np.ptp(inlier_model_pts[:, 1]) / float(h_m)
+                if span_x < 0.12 or span_y < 0.12:
+                    continue
+
+                # Project corners to 2x space and validate polygon convexity
                 dst_scaled = cv2.perspectiveTransform(query_corners, M)
+                if not cv2.isContourConvex(np.int32(dst_scaled)):
+                    continue
+
+                h_bb_raw = np.linalg.norm(dst_scaled[0] - dst_scaled[1])
+                w_bb_raw = np.linalg.norm(dst_scaled[0] - dst_scaled[3])
+                box_ar = h_bb_raw / (w_bb_raw + 1e-6)
+                if not (0.65 * model_ar <= box_ar <= 1.50 * model_ar):
+                    continue
+
+                # Scale back to 1x original resolution and straighten
                 dst = dst_scaled / scale
                 dst = _straighten_bb(dst)
 
                 height_bb = round(np.linalg.norm(dst[0] - dst[1]))
                 width_bb  = round(np.linalg.norm(dst[0] - dst[3]))
-                x_center  = round(dst[0,0,0] + width_bb  / 2.0)
-                y_center  = round(dst[0,0,1] + height_bb / 2.0)
+                x_center  = round(dst[0, 0, 0] + width_bb  / 2.0)
+                y_center  = round(dst[0, 0, 1] + height_bb / 2.0)
 
-                # Distractor rejection & bounding box sanity checks:
-                # Discard price tags (height < 45px), extreme outliers, or degenerate shapes
+                # Distractor rejection & bounding box bounds (reject price tags < 45px)
                 if not (24 <= width_bb <= 115 and 45 <= height_bb <= 145):
-                    continue
-
-                aspect_ratio = height_bb / (width_bb + 1e-5)
-                if not (0.75 <= aspect_ratio <= 2.5):
                     continue
 
                 # Center must reside inside the visible image frame
                 if not (10 <= x_center <= w_s - 10 and 15 <= y_center <= h_s - 15):
                     continue
 
-                x1 = max(0, int(dst[0,0,0]))
-                y1 = max(0, int(dst[0,0,1]))
-                x2 = min(w_s, int(dst[2,0,0]))
-                y2 = min(h_s, int(dst[2,0,1]))
+                x1 = max(0, int(dst[0, 0, 0]))
+                y1 = max(0, int(dst[0, 0, 1]))
+                x2 = min(w_s, int(dst[2, 0, 0]))
+                y2 = min(h_s, int(dst[2, 0, 1]))
                 if x2 <= x1 + 18 or y2 <= y1 + 30:
                     continue
 
@@ -339,15 +348,15 @@ def produce_outputs(img_train_vector, img_query_vector,
                 dist = mahalanobis_color_distance(img_m, scene_crop)
 
                 # Tiered colour threshold: low-inlier detections require stricter colour match
-                if inlier_count < 7 and dist > 0.65:
+                if inlier_count < 8 and dist > 0.70:
                     continue
-                if inlier_count < 10 and dist > 0.95:
+                if inlier_count < 11 and dist > 0.95:
                     continue
                 if dist > COLOR_THRESH:
                     continue
 
                 box = [x1, y1, x2, y2]
-                score = inlier_count / (1.0 + dist * 0.4)
+                score = inlier_count / (dist + 0.1)
 
                 scene_candidates.append({
                     'model_id': mi,
@@ -374,27 +383,16 @@ def produce_outputs(img_train_vector, img_query_vector,
             suppressed = False
             for f in final_detections:
                 boxB = f['box']
-                xA = max(boxA[0], boxB[0])
-                yA = max(boxA[1], boxB[1])
-                xB = min(boxA[2], boxB[2])
-                yB = min(boxA[3], boxB[3])
-
-                interArea = max(0, xB - xA) * max(0, yB - yA)
-                areaA = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
-                areaB = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
-
-                iou = interArea / float(areaA + areaB - interArea + 1e-6)
-                io_min = interArea / float(min(areaA, areaB) + 1e-6)
-
-                if iou > 0.35 or io_min > 0.55:
+                if _compute_iou(boxA, boxB) > 0.35:
                     suppressed = True
                     break
 
             if not suppressed:
                 final_detections.append(cand)
 
-        # Sort detections by shelf (vertical) then horizontally for clean output reporting
-        final_detections.sort(key=lambda d: (d['cy'] // 90, d['cx']))
+        # Sort detections by shelf row (resolution-adaptive) then horizontally
+        shelf_row_height = max(20, int(round(h_s * 0.18)))
+        final_detections.sort(key=lambda d: (d['cy'] // shelf_row_height, d['cx']))
 
         # Group by model for structured output reporting
         model_instance_counter = {}
@@ -414,13 +412,13 @@ def produce_outputs(img_train_vector, img_query_vector,
             # Draw bounding box and label
             img_output = cv2.polylines(
                 img_output, [np.int32(dst)], True, (0, 255, 0), 2, cv2.LINE_AA)
-            label = f"P{mid+1} #{instance_num}"
+            label = f"P{mid + 1} #{instance_num}"
             cv2.putText(
-                img_output, label, (int(dst[0,0,0]), max(15, int(dst[0,0,1]) - 4)),
+                img_output, label, (int(dst[0, 0, 0]), max(15, int(dst[0, 0, 1]) - 4)),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.40, (0, 0, 255), 1, cv2.LINE_AA)
 
             colour_info = f"Mahalanobis dist = {m_dist:.4f}"
-            print(f"  -> Instance {instance_num} found for P{mid+1} ({b_name}) [{colour_info}]:\n"
+            print(f"  -> Instance {instance_num} found for P{mid + 1} ({b_name}) [{colour_info}]:\n"
                   f"     Position: ({x_c}, {y_c}), Width: {w_b} px, Height: {h_b} px, Peak Votes: {votes}, Inliers: {inls}")
 
         # Summary per product
@@ -429,34 +427,30 @@ def produce_outputs(img_train_vector, img_query_vector,
             mid = m_dict['id']
             cnt = model_instance_counter.get(mid, 0)
             if cnt > 0:
-                print(f"Product {mid+1:2d} ({m_dict['name']}, {m_dict['path']}): {cnt} instance(s) detected.")
+                print(f"Product {mid + 1:2d} ({m_dict['name']}, {m_dict['path']}): {cnt} instance(s) detected.")
             else:
-                print(f"Product {mid+1:2d} ({m_dict['name']}, {m_dict['path']}): 0 instance found.")
+                print(f"Product {mid + 1:2d} ({m_dict['name']}, {m_dict['path']}): 0 instance found.")
 
         total_scene_instances = len(final_detections)
         print(f"\nTotal products detected in {scene_filename}: {total_scene_instances} instances")
 
-        # Save annotated images (both StepC and generic detected name)
+        # Save annotated images
         root_name = os.path.splitext(scene_filename)[0]
         output_filename = f"{root_name}_detected_StepC.png"
         output_path = os.path.join(output_dir, output_filename)
         cv2.imwrite(output_path, img_output)
-        # Also save as {root_name}_detected.png and {root_name}_detected_GHT.png for compatibility
         cv2.imwrite(os.path.join(output_dir, f"{root_name}_detected.png"), img_output)
-        print(f"[Saved annotated scene to: {output_path} and {root_name}_detected.png]\n" + "-"*70)
+        print(f"[Saved annotated scene to: {output_path} and {root_name}_detected.png]\n" + "-" * 70)
 
 
 # Entry point
 if __name__ == '__main__':
-    # Test scenes: {h1.png, h2.png, h3.png, h4.png, h5.png} (or .jpg fallback)
     img_train_vector = ['h1.png', 'h2.png', 'h3.png', 'h4.png', 'h5.png']
-
-    # Reference product images: {from 0.jpg to 23.jpg}
     img_query_vector = [f"{i}.jpg" for i in range(24)]
 
     produce_outputs(img_train_vector, img_query_vector,
                     scale=2.0,
-                    MIN_INLIER_COUNT=5,
+                    MIN_INLIER_COUNT=7,
                     BIN_SIZE_BASE=26,
                     COLOR_THRESH=1.25,
                     model_names=model_name_vector)
