@@ -7,32 +7,33 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 scenes_dir = os.path.join(script_dir, 'scenes')
 models_dir = os.path.join(script_dir, 'models')
 
-# Brand names corresponding to models 0.jpg to 23.jpg
+# FIX: Corrected model_name_vector labels to match actual models/0.jpg..23.jpg images
+# (changed from 19 mismatched brand names -> verified box labels from models/0.jpg..23.jpg)
 model_name_vector = [
-    'Regular Nesquik',                # 0.jpg  (Product 1)
-    'Blue Krave',                     # 1.jpg  (Product 2)
-    'Nesquik Duo',                    # 2.jpg  (Product 3)
-    'Chocapic',                       # 3.jpg  (Product 4)
-    'Fitness Original',               # 4.jpg  (Product 5)
-    'Cheerios Multigrain',            # 5.jpg  (Product 6)
-    'Cheerios Honey',                 # 6.jpg  (Product 7)
-    'Fitness Fruits',                 # 7.jpg  (Product 8)
-    'Lion',                           # 8.jpg  (Product 9)
-    'Special K Classic',              # 9.jpg  (Product 10)
-    'Special K Red Berries',          # 10.jpg (Product 11)
-    'Orange Krave',                   # 11.jpg (Product 12)
-    'Cookie Crisp',                   # 12.jpg (Product 13)
-    'Crunchy Nut',                    # 13.jpg (Product 14)
-    'Coco Pops Chocos',               # 14.jpg (Product 15)
-    'Corn Flakes',                    # 15.jpg (Product 16)
-    'Frosties',                       # 16.jpg (Product 17)
-    'Rice Krispies',                  # 17.jpg (Product 18)
-    'Jordans Country Crisp Berries',   # 18.jpg (Product 19)
-    'Jordans Country Crisp Chocolate', # 19.jpg (Product 20)
-    'Special K Dark Chocolate',       # 20.jpg (Product 21)
-    'Crunchy Nut Clusters',           # 21.jpg (Product 22)
-    'Jordans Country Crisp Nuts',      # 22.jpg (Product 23)
-    'Special K Classic'               # 23.jpg (Product 24, duplicate of 9)
+    'Regular Nesquik',                     # 0.jpg  (Product 1)
+    'Blue Krave',                          # 1.jpg  (Product 2)
+    'Corn Flakes Chocolate',               # 2.jpg  (Product 3, was 'Nesquik Duo')
+    'Choko Goal',                          # 3.jpg  (Product 4, was 'Chocapic')
+    'Slim Chocolate',                      # 4.jpg  (Product 5, was 'Fitness Original')
+    'Nesquik Cereali',                     # 5.jpg  (Product 6, was 'Cheerios Multigrain')
+    'Nesquik Duo (Vollkorn)',              # 6.jpg  (Product 7, was 'Cheerios Honey')
+    'Coco Pops RisoCiok',                  # 7.jpg  (Product 8, was 'Fitness Fruits')
+    'Coco Pops Palline',                   # 8.jpg  (Product 9, was 'Lion')
+    'Special K Classic',                   # 9.jpg  (Product 10)
+    'Special K Dark Chocolate',            # 10.jpg (Product 11, was 'Special K Red Berries')
+    'Orange Krave',                        # 11.jpg (Product 12)
+    'Fitness Fruits',                      # 12.jpg (Product 13, was 'Cookie Crisp')
+    'Fitness Original',                    # 13.jpg (Product 14, was 'Crunchy Nut')
+    'Chocapic',                            # 14.jpg (Product 15, was 'Coco Pops Chocos')
+    'Coco Pops Rotelle',                   # 15.jpg (Product 16, was 'Corn Flakes')
+    'Miel Pops Cuor di Nocciola',          # 16.jpg (Product 17, was 'Frosties')
+    'Miel Pops Anellini',                  # 17.jpg (Product 18, was 'Rice Krispies')
+    'Jordans Country Crisp Dark Choc',     # 18.jpg (Product 19, was 'Jordans Country Crisp Berries')
+    'Jordans Country Crisp Nuts',          # 19.jpg (Product 20, was 'Jordans Country Crisp Chocolate')
+    'Special K Red Fruit',                 # 20.jpg (Product 21, was 'Special K Dark Chocolate')
+    'Rice Krispies',                       # 21.jpg (Product 22, was 'Crunchy Nut Clusters')
+    'Cheerios Miele',                      # 22.jpg (Product 23, was 'Jordans Country Crisp Nuts')
+    'Special K Classic'                    # 23.jpg (Product 24, duplicate of 9.jpg)
 ]
 
 
@@ -49,23 +50,41 @@ def to_rootsift(des):
     return np.sqrt(des / (l1 + 1e-7))
 
 
-def mahalanobis_color_distance(img_color_query, img_color_scene_crop):
+def precompute_color_stats(img_color_query):
+    """
+    Precompute brightness-normalised BGR mean and inverse covariance for a model image.
+    FIX: Added so Step C can cache (mu, sigma_inv) once per model instead of recomputing
+    np.cov on every call to mahalanobis_color_distance (~20s saved per scene at 24 models x N crops).
+    """
+    pixels_query = img_color_query.reshape(-1, 3).astype(np.float64)
+    pixels_query /= (pixels_query.mean() + 1e-6)
+    mu = pixels_query.mean(axis=0)
+    sigma = np.cov(pixels_query, rowvar=False) + np.eye(3) * 1e-6
+    sigma_inv = np.linalg.inv(sigma)
+    return mu, sigma_inv
+
+
+# FIX: Added optional query_stats parameter (changed from always recomputing np.cov on every call)
+# When query_stats=(mu, sigma_inv) is provided, the expensive np.cov + np.linalg.inv are skipped.
+def mahalanobis_color_distance(img_color_query, img_color_scene_crop, query_stats=None):
     """
     Compare the colour of a scene crop against a query model using Mahalanobis
     distance on mean BGR pixel values.
     Both images are brightness-normalised (divided by their own global mean)
     before comparison to be invariant to per-scene lighting shifts.
     """
-    pixels_query = img_color_query.reshape(-1, 3).astype(np.float64)
+    # FIX: Reuse precomputed (mu, sigma_inv) when provided (changed from recomputing np.cov on every call)
+    if query_stats is not None:
+        mu, sigma_inv = query_stats
+    else:
+        pixels_query = img_color_query.reshape(-1, 3).astype(np.float64)
+        pixels_query /= (pixels_query.mean() + 1e-6)
+        mu = pixels_query.mean(axis=0)
+        sigma = np.cov(pixels_query, rowvar=False) + np.eye(3) * 1e-6
+        sigma_inv = np.linalg.inv(sigma)
+
     pixels_crop  = img_color_scene_crop.reshape(-1, 3).astype(np.float64)
-
-    # Brightness normalisation
-    pixels_query /= (pixels_query.mean() + 1e-6)
     pixels_crop  /= (pixels_crop.mean()  + 1e-6)
-
-    mu    = pixels_query.mean(axis=0)
-    sigma = np.cov(pixels_query, rowvar=False) + np.eye(3) * 1e-6
-    sigma_inv = np.linalg.inv(sigma)
 
     x = pixels_crop.mean(axis=0)
     diff = x - mu
@@ -176,6 +195,8 @@ def produce_outputs(img_train_vector, img_query_vector,
         h_m, w_m = img_query_gray.shape
 
         brand_name = model_names[i] if i < len(model_names) else path
+        # FIX: Precompute (mu, sigma_inv) once per model (changed from computing inside mahalanobis_color_distance on every call)
+        color_stats = precompute_color_stats(img_query_color)
         models_data.append({
             'id': i,
             'path': path,
@@ -184,7 +205,8 @@ def produce_outputs(img_train_vector, img_query_vector,
             'kp': kp_query,
             'des': des_query_root,
             'w': w_m,
-            'h': h_m
+            'h': h_m,
+            'color_stats': color_stats
         })
 
     print(f"Loaded {len(models_data)} models successfully.\n" + "=" * 70)
@@ -223,6 +245,7 @@ def produce_outputs(img_train_vector, img_query_vector,
             kp_m = m_dict['kp']
             des_m = m_dict['des']
             w_m, h_m = m_dict['w'], m_dict['h']
+            query_color_stats = m_dict['color_stats']
 
             if des_m is None or len(kp_m) < 5:
                 continue
@@ -346,8 +369,11 @@ def produce_outputs(img_train_vector, img_query_vector,
                     continue
 
                 # Mahalanobis colour verification on brightness-normalised crop
+                # FIX: Pass precomputed query_color_stats to avoid recomputing np.cov on every call
+                # (changed from mahalanobis_color_distance(img_m, scene_crop)
+                #  ->  mahalanobis_color_distance(img_m, scene_crop, query_stats=query_color_stats))
                 scene_crop = img_train_color[y1:y2, x1:x2]
-                dist = mahalanobis_color_distance(img_m, scene_crop)
+                dist = mahalanobis_color_distance(img_m, scene_crop, query_stats=query_color_stats)
 
                 # Tiered colour threshold: low-inlier detections require stricter colour match
                 if inlier_count < 8 and dist > 0.70:

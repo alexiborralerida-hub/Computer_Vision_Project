@@ -7,35 +7,46 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 scenes_dir = os.path.join(script_dir, 'scenes')
 models_dir = os.path.join(script_dir, 'models')
 
+# FIX: Updated model 26.jpg label (changed from 'Nesquick Pink' -> 'Nesquik Duo (Pink)')
 # Brand names corresponding to img_query_vector
 model_name_vector = [
-    'Regular Nesquick',  # 0.jpg  (Product 1)
-    'Blue Krave',        # 1.jpg  (Product 2)
-    'Orange Krave',      # 11.jpg (Product 3)
-    'Jordans',           # 19.jpg (Product 4)
-    'Fitness',           # 24.jpg (Product 5)
-    'Nesquick Pink',     # 26.jpg (Product 6)
-    'Red Coco Pops'      # 25.jpg (Product 7)
+    'Regular Nesquick',    # 0.jpg  (Product 1)
+    'Blue Krave',          # 1.jpg  (Product 2)
+    'Orange Krave',        # 11.jpg (Product 3)
+    'Jordans',             # 19.jpg (Product 4)
+    'Fitness',             # 24.jpg (Product 5)
+    'Nesquik Duo (Pink)',  # 26.jpg (Product 6)
+    'Red Coco Pops'        # 25.jpg (Product 7)
 ]
 
 
-def mahalanobis_color_distance(img_color_query, img_color_scene_crop):
+def precompute_color_stats(img_color_query):
+    """
+    Precompute brightness-normalised BGR mean and inverse covariance for a model image.
+    """
+    pixels_query = img_color_query.reshape(-1, 3).astype(np.float64)
+    pixels_query /= (pixels_query.mean() + 1e-6)
+    mu = pixels_query.mean(axis=0)
+    sigma = np.cov(pixels_query, rowvar=False) + np.eye(3) * 1e-6
+    sigma_inv = np.linalg.inv(sigma)
+    return mu, sigma_inv
+
+
+def mahalanobis_color_distance(img_color_query, img_color_scene_crop, query_stats=None):
     """
     Compare the colour of a scene crop against a query model using Mahalanobis
     distance on mean BGR pixel values.
     Both images are brightness-normalised (divided by their own global mean)
     before comparison to be invariant to per-scene lighting shifts.
     """
-    pixels_query = img_color_query.reshape(-1, 3).astype(np.float64)
-    pixels_crop  = img_color_scene_crop.reshape(-1, 3).astype(np.float64)
+    # FIX: Reuse precomputed model (mu, sigma_inv) when provided (changed from recomputing np.cov on every call)
+    if query_stats is not None:
+        mu, sigma_inv = query_stats
+    else:
+        mu, sigma_inv = precompute_color_stats(img_color_query)
 
-    # Brightness normalisation
-    pixels_query /= (pixels_query.mean() + 1e-6)
-    pixels_crop  /= (pixels_crop.mean()  + 1e-6)
-
-    mu    = pixels_query.mean(axis=0)
-    sigma = np.cov(pixels_query, rowvar=False) + np.eye(3) * 1e-6
-    sigma_inv = np.linalg.inv(sigma)
+    pixels_crop = img_color_scene_crop.reshape(-1, 3).astype(np.float64)
+    pixels_crop /= (pixels_crop.mean() + 1e-6)
 
     x = pixels_crop.mean(axis=0)
     diff = x - mu
@@ -131,6 +142,8 @@ def produce_outputs(img_train_vector, img_query_vector,
 
         brand_name = model_names[i] if i < len(model_names) else path
         query_thresh = thresh_vector[i] if i < len(thresh_vector) else 1.0
+        # FIX: Precompute (mu, sigma_inv) once per model (changed from computing inside mahalanobis_color_distance on every call)
+        color_stats = precompute_color_stats(img_query_color)
 
         models_data.append({
             'id': i,
@@ -141,7 +154,8 @@ def produce_outputs(img_train_vector, img_query_vector,
             'des': des_query,
             'w': w_m,
             'h': h_m,
-            'thresh': query_thresh
+            'thresh': query_thresh,
+            'color_stats': color_stats
         })
 
     print(f"Loaded {len(models_data)} models successfully.\n" + "=" * 70)
@@ -180,6 +194,7 @@ def produce_outputs(img_train_vector, img_query_vector,
             des_query = m_dict['des']
             w_m, h_m = m_dict['w'], m_dict['h']
             query_thresh = m_dict['thresh']
+            query_color_stats = m_dict['color_stats']
 
             if des_query is None or len(kp_query) < 10:
                 continue
@@ -316,8 +331,11 @@ def produce_outputs(img_train_vector, img_query_vector,
                 x_center  = round(dst[0, 0, 0] + width_bb  / 2.0)
                 y_center  = round(dst[0, 0, 1] + height_bb / 2.0)
 
-                # Size bounds relative to scene
-                if height_bb < 0.15 * h_s or height_bb > 0.95 * h_s:
+                # FIX: Raised upper height bound from 0.95 * h_s -> 1.1 * h_s to allow
+                # tight-crop scenes (m1.png h=467px, m4.png h=526px) where valid boxes
+                # (Fitness 466px, Nesquik Duo 463px) filled >95% of frame height and
+                # were incorrectly dropped by the original 0.95 ceiling.
+                if height_bb < 0.15 * h_s or height_bb > 1.1 * h_s:
                     continue
 
                 x1 = max(0, int(dst[0, 0, 0]))
@@ -339,8 +357,11 @@ def produce_outputs(img_train_vector, img_query_vector,
                     continue
 
                 # 6. Mahalanobis Colour Verification
+                # FIX: Pass precomputed query_color_stats to avoid recomputing np.cov on every call
+                # (changed from mahalanobis_color_distance(img_query_color, scene_crop)
+                #  ->  mahalanobis_color_distance(img_query_color, scene_crop, query_stats=query_color_stats))
                 scene_crop = img_train_color[y1:y2, x1:x2]
-                dist = mahalanobis_color_distance(img_query_color, scene_crop)
+                dist = mahalanobis_color_distance(img_query_color, scene_crop, query_stats=query_color_stats)
                 if dist > query_thresh:
                     continue
 

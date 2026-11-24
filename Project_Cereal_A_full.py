@@ -215,6 +215,11 @@ def produce_query(img_query_vector, sift,
             if M is None:
                 break
 
+            # PROPOSED FIX (not applied in Step A): Validate homography before straightening:
+            #   1. Check cv2.isContourConvex(np.int32(dst)) to reject folded/self-intersecting quads.
+            #   2. Check RANSAC inlier spatial spread (>= 12% of model width/height) to reject logo-only clusters.
+            #   3. Check model-relative aspect ratio (0.60 * model_ar <= box_ar <= 1.60 * model_ar)
+            #      to stop oversized Red Coco Pops boxes from spilling across adjacent boxes (e.g. e4.png, e5.png).
             dst = cv2.perspectiveTransform(query_corners, M)
             dst = _straighten_bb(dst)
 
